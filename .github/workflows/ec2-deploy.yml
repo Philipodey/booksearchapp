@@ -1,4 +1,4 @@
-name: Deploy Docker Image to EC2
+name: Deploy Docker Image to AWS EC2
 
 on:
   push:
@@ -6,57 +6,41 @@ on:
       - main
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
+    - name: Checkout code
       uses: actions/checkout@v2
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v1
 
     - name: Log in to Docker Hub
-      uses: docker/login-action@v2
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
+      run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
     - name: Build and push Docker image
       run: |
-        docker build -t ${{ secrets.DOCKER_USERNAME }}/your-docker-image:latest .
-        docker push ${{ secrets.DOCKER_USERNAME }}/your-docker-image:latest
+        docker build -t my-docker-image:latest .
+        docker tag my-docker-image:latest <your-dockerhub-username>/my-docker-image:latest
+        docker push <your-dockerhub-username>/my-docker-image:latest
 
-    - name: Install AWS CLI
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y awscli
+    - name: Install SSH Client
+      run: sudo apt-get install -y openssh-client
 
     - name: Deploy to EC2
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
-        DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-        DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-        INSTANCE_ID: ${{ secrets.INSTANCE_ID }}
-        KEY_NAME: ${{ secrets.KEY_NAME }}
-        INSTANCE_USER: ${{ secrets.INSTANCE_USER }}
+        EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+        EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        EC2_USER: ${{ secrets.EC2_USER }}
       run: |
-        PUBLIC_DNS=$(aws ec2 describe-instances \
-            --instance-ids $INSTANCE_ID \
-            --query 'Reservations[0].Instances[0].PublicDnsName' \
-            --output text)
-
-        echo "Instance $INSTANCE_ID is running at $PUBLIC_DNS"
-
-        SSH_COMMANDS="sudo yum update -y
-                      sudo amazon-linux-extras install docker -y
-                      sudo service docker start
-                      sudo usermod -a -G docker ec2-user
-                      sudo systemctl enable docker
-                      echo $DOCKER_PASSWORD | docker login --username $DOCKER_USERNAME --password-stdin
-                      docker pull $DOCKER_USERNAME/your-docker-image:latest
-                      docker run -d $DOCKER_USERNAME/your-docker-image:latest"
-
-        ssh -o StrictHostKeyChecking=no -i $GITHUB_WORKSPACE/${KEY_NAME}.pem $INSTANCE_USER@$PUBLIC_DNS "$SSH_COMMANDS"
+        echo "${EC2_SSH_KEY}" > key.pem
+        chmod 400 key.pem
+        ssh -o StrictHostKeyChecking=no -i key.pem ${EC2_USER}@${EC2_INSTANCE_ID} << 'EOF'
+          docker pull <your-dockerhub-username>/my-docker-image:latest
+          docker stop my-running-container || true
+          docker rm my-running-container || true
+          docker run -d --name my-running-container <your-dockerhub-username>/my-docker-image:latest
+        EOF
