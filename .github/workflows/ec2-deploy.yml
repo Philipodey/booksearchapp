@@ -13,34 +13,43 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v2
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v1
-
     - name: Log in to Docker Hub
       run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-    - name: Build and push Docker image
+    - name: Build Docker image
       run: |
         docker build -t my-docker-image:latest .
-        docker tag my-docker-image:latest <your-dockerhub-username>/my-docker-image:latest
-        docker push <your-dockerhub-username>/my-docker-image:latest
+        docker tag my-docker-image:latest ${{ secrets.DOCKER_USERNAME }}/my-docker-image:latest
+
+    - name: Push Docker image to Docker Hub
+      run: docker push ${{ secrets.DOCKER_USERNAME }}/my-docker-image:latest
+
+    - name: Install AWS CLI
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y awscli
+
+    - name: Retrieve EC2 Instance Public IP
+      id: ec2-info
+      run: |
+        INSTANCE_IP=$(aws ec2 describe-instances --instance-ids ${{ secrets.EC2_INSTANCE_ID }} --query 'Reservations[*].Instances[*].PublicIpAddress' --output text)
+        echo "::set-output name=INSTANCE_IP::$INSTANCE_IP"
 
     - name: Install SSH Client
       run: sudo apt-get install -y openssh-client
 
     - name: Deploy to EC2
       env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
         EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        INSTANCE_IP: ${{ steps.ec2-info.outputs.INSTANCE_IP }}
+        DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/my-docker-image:latest
         EC2_USER: ${{ secrets.EC2_USER }}
       run: |
         echo "${EC2_SSH_KEY}" > key.pem
         chmod 400 key.pem
-        ssh -o StrictHostKeyChecking=no -i key.pem ${EC2_USER}@${EC2_INSTANCE_ID} << 'EOF'
-          docker pull <your-dockerhub-username>/my-docker-image:latest
+        ssh -o StrictHostKeyChecking=no -i key.pem ${EC2_USER}@${INSTANCE_IP} << 'EOF'
+          docker pull ${DOCKER_IMAGE}
           docker stop my-running-container || true
           docker rm my-running-container || true
-          docker run -d --name my-running-container <your-dockerhub-username>/my-docker-image:latest
+          docker run -d --name my-running-container -p 80:80 ${DOCKER_IMAGE}
         EOF
